@@ -71,7 +71,7 @@ values-prod.yaml
 Production follows the existing release process:
 
 ```text
-Build → ACR → QA → MOP Approval → Team Lead → Production
+Build → ACR → QA → Team Lead → Production
 ```
 
 Production deployment is not automatically released without the required approval process.
@@ -106,12 +106,12 @@ The workflows are currently designed around:
 * Helm
 * Self-hosted GitHub Actions runners
 
-The current project uses:
+Example in azure
 
 ```text
-ACR: abdulacr
-AKS: abdul-aks
-Resource Group: abdul-rg
+ACR: abdl-gitacr
+AKS: abdl-gitaks
+Resource Group: abdl-gitrg
 ```
 
 ## Security
@@ -135,8 +135,6 @@ Planned improvements include:
 * Move from image tags to immutable image digests.
 * Add stronger deployment concurrency controls.
 * Add additional security and policy gates where required.
-
-These will be introduced after testing rather than changing the current working deployment path unnecessarily.
 
 ## Principle
 
