@@ -114,6 +114,19 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Debug Azure access
+        run: |
+          echo "=== Azure Account ==="
+          az account show --output table
+
+          echo "=== ACRs ==="
+          az acr list --output table
+
+          echo "=== Target ACR ==="
+          az acr show \
+            --name "${{ inputs.acr-name }}" \
+            --output table
+
       - name: Get ACR login server
         id: acr
         run: |
