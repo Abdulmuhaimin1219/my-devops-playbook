@@ -1,0 +1,155 @@
+name: Reusable - Build, Test and Push to ACR
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the application"
+        required: false
+        type: string
+        default: "."
+
+      acr-name:
+        description: "Azure Container Registry name"
+        required: true
+        type: string
+
+      image-name:
+        description: "Container image name"
+        required: false
+        type: string
+        default: ""
+
+      dockerfile:
+        description: "Path to the Dockerfile"
+        required: false
+        type: string
+        default: "Dockerfile"
+
+      context:
+        description: "Docker build context"
+        required: false
+        type: string
+        default: "."
+
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+
+      AZURE_TENANT_ID:
+        required: true
+
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+
+    outputs:
+      image:
+        description: "Full container image reference"
+        value: ${{ jobs.build-and-push.outputs.image }}
+
+      image-tag:
+        description: "Container image tag"
+        value: ${{ jobs.build-and-push.outputs.image-tag }}
+
+jobs:
+
+  test:
+    name: Test Application
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Format check
+        run: |
+          test -z "$(gofmt -l .)"
+
+      - name: Run tests
+        run: go test ./...
+
+  build-and-push:
+    name: Build and Push Image
+    needs: test
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      image-tag: ${{ steps.image.outputs.tag }}
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Azure authentication
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get ACR login server
+        id: acr
+        run: |
+          ACR_LOGIN_SERVER=$(az acr show \
+            --name "${{ inputs.acr-name }}" \
+            --query loginServer \
+            --output tsv)
+
+          echo "login-server=$ACR_LOGIN_SERVER" >> "$GITHUB_OUTPUT"
+
+      - name: Login to ACR
+        run: |
+          az acr login --name "${{ inputs.acr-name }}"
+
+      - name: Set image metadata
+        id: image
+        env:
+          ACR_LOGIN_SERVER: ${{ steps.acr.outputs.login-server }}
+          INPUT_IMAGE_NAME: ${{ inputs.image-name }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          IMAGE_NAME="${INPUT_IMAGE_NAME:-$REPOSITORY_NAME}"
+          IMAGE_TAG="$RUN_NUMBER"
+          IMAGE="$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG"
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+          echo "Image: $IMAGE"
+
+      - name: Build Docker image
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          docker build \
+            --file "${{ inputs.dockerfile }}" \
+            --tag "$IMAGE" \
+            "${{ inputs.context }}"
+
+      - name: Push Docker image
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          docker push "$IMAGE"
