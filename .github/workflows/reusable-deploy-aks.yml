@@ -1,0 +1,289 @@
+name: Reusable - Deploy to AKS
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment and deployment target"
+        required: true
+        type: string
+
+      image_tag:
+        description: "Container image tag produced by CI (currently a GitHub Actions run number)"
+        required: true
+        type: string
+
+      acr_name:
+        description: "Azure Container Registry name"
+        required: true
+        type: string
+
+      image_name:
+        description: "Container image repository name"
+        required: true
+        type: string
+
+      aks_resource_group:
+        description: "AKS resource group"
+        required: true
+        type: string
+
+      aks_cluster_name:
+        description: "AKS cluster name"
+        required: true
+        type: string
+
+      namespace:
+        description: "Kubernetes namespace"
+        required: true
+        type: string
+
+      release_name:
+        description: "Helm release name"
+        required: true
+        type: string
+
+      deployment_name:
+        description: "Kubernetes Deployment name"
+        required: true
+        type: string
+
+      helm_chart:
+        description: "Path to the application's Helm chart"
+        required: true
+        type: string
+
+      values_file:
+        description: "Optional environment-specific Helm values file"
+        required: false
+        type: string
+        default: ""
+
+      runner:
+        description: "Runner label used for deployment"
+        required: false
+        type: string
+        default: "self-hosted"
+
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+
+      AZURE_TENANT_ID:
+        required: true
+
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+
+    outputs:
+      image:
+        description: "Full container image reference deployed"
+        value: ${{ jobs.deploy.outputs.image }}
+
+      environment:
+        description: "Environment deployed to"
+        value: ${{ jobs.deploy.outputs.environment }}
+
+jobs:
+
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+
+    runs-on: ${{ inputs.runner }}
+
+    environment:
+      name: ${{ inputs.environment }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      environment: ${{ inputs.environment }}
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Validate deployment inputs
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          IMAGE_NAME: ${{ inputs.image_name }}
+          NAMESPACE: ${{ inputs.namespace }}
+          RELEASE_NAME: ${{ inputs.release_name }}
+          DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+        run: |
+          set -euo pipefail
+
+          # Current CI contract: image tags are GitHub Actions run numbers.
+          if [[ ! "$IMAGE_TAG" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: image_tag must be a numeric GitHub Actions run number."
+            exit 1
+          fi
+
+          if [[ ! "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+            echo "ERROR: Invalid Kubernetes namespace: $NAMESPACE"
+            echo "Namespace must contain only lowercase letters, numbers, and hyphens."
+            exit 1
+          fi
+
+          if [[ ! "$RELEASE_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+            echo "ERROR: Invalid Helm release name: $RELEASE_NAME"
+            echo "Release name must contain only lowercase letters, numbers, and hyphens."
+            exit 1
+          fi
+
+          if [[ ! "$DEPLOYMENT_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+            echo "ERROR: Invalid Kubernetes deployment name: $DEPLOYMENT_NAME"
+            echo "Deployment name must contain only lowercase letters, numbers, and hyphens."
+            exit 1
+          fi
+
+          for VALUE in \
+            "$IMAGE_NAME" \
+            "$NAMESPACE" \
+            "$RELEASE_NAME" \
+            "$DEPLOYMENT_NAME"; do
+
+            if [ -z "$VALUE" ]; then
+              echo "ERROR: Required deployment input cannot be empty."
+              exit 1
+            fi
+          done
+
+          echo "Deployment input validation passed."
+
+      - name: Validate image
+        id: image
+        env:
+          ACR_NAME: ${{ inputs.acr_name }}
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_NAME=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')
+          ACR_LOGIN_SERVER="$ACR_NAME.azurecr.io"
+          IMAGE="$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG"
+
+          echo "Checking image: $IMAGE"
+
+          az acr repository show \
+            --name "$ACR_NAME" \
+            --image "$IMAGE_NAME:$IMAGE_TAG" \
+            --output none
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+          echo "Image exists: $IMAGE"
+
+      - name: Get AKS credentials
+        env:
+          AKS_RESOURCE_GROUP: ${{ inputs.aks_resource_group }}
+          AKS_CLUSTER_NAME: ${{ inputs.aks_cluster_name }}
+        run: |
+          set -euo pipefail
+
+          az aks get-credentials \
+            --resource-group "$AKS_RESOURCE_GROUP" \
+            --name "$AKS_CLUSTER_NAME" \
+            --overwrite-existing
+
+      - name: Verify AKS access
+        run: |
+          set -euo pipefail
+
+          kubectl get nodes \
+            --request-timeout=30s
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Helm lint
+        env:
+          HELM_CHART: ${{ inputs.helm_chart }}
+          VALUES_FILE: ${{ inputs.values_file }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$VALUES_FILE" ]; then
+            echo "Linting Helm chart with values file: $VALUES_FILE"
+
+            helm lint \
+              "$HELM_CHART" \
+              --values "$VALUES_FILE"
+          else
+            echo "Linting Helm chart with default values."
+
+            helm lint "$HELM_CHART"
+          fi
+
+      - name: Deploy with Helm
+        env:
+          ACR_NAME: ${{ inputs.acr_name }}
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          NAMESPACE: ${{ inputs.namespace }}
+          RELEASE_NAME: ${{ inputs.release_name }}
+          HELM_CHART: ${{ inputs.helm_chart }}
+          VALUES_FILE: ${{ inputs.values_file }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_NAME=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')
+          IMAGE_REPOSITORY="$ACR_NAME.azurecr.io/$IMAGE_NAME"
+
+          HELM_ARGS=(
+            --namespace "$NAMESPACE"
+            --create-namespace
+            --set "image.repository=$IMAGE_REPOSITORY"
+            --set "image.tag=$IMAGE_TAG"
+            --atomic
+            --timeout 5m
+          )
+
+          if [ -n "$VALUES_FILE" ]; then
+            HELM_ARGS+=(
+              --values "$VALUES_FILE"
+            )
+          fi
+
+          echo "Deploying:"
+          echo "  Release:     $RELEASE_NAME"
+          echo "  Image:       $IMAGE_REPOSITORY:$IMAGE_TAG"
+          echo "  Namespace:   $NAMESPACE"
+          echo "  Environment: ${{ inputs.environment }}"
+
+          helm upgrade --install \
+            "$RELEASE_NAME" \
+            "$HELM_CHART" \
+            "${HELM_ARGS[@]}"
+
+      - name: Deployment Summary
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+          RELEASE_NAME: ${{ inputs.release_name }}
+          DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Pods ==="
+          kubectl get pods -n "$NAMESPACE"
+
+          echo "=== Deployment ==="
+          kubectl get deployment "$DEPLOYMENT_NAME" -n "$NAMESPACE"
+
+          echo "=== Services ==="
+          kubectl get service -n "$NAMESPACE"
+
+          echo "=== Helm Release ==="
+          helm status "$RELEASE_NAME" -n "$NAMESPACE"
