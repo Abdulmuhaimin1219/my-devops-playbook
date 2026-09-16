@@ -3,6 +3,12 @@ name: Reusable - Build, Test and Push to ACR
 on:
   workflow_call:
     inputs:
+      runner:
+        description: "Runner labels used to select the GitHub Actions runner"
+        required: false
+        type: string
+        default: "self-hosted"
+
       working-directory:
         description: "Directory containing the application"
         required: false
@@ -55,7 +61,7 @@ jobs:
 
   test:
     name: Test Application
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
 
     permissions:
       contents: read
@@ -83,7 +89,7 @@ jobs:
   build-and-push:
     name: Build and Push Image
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
 
     permissions:
       contents: read
