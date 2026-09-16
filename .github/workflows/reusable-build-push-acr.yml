@@ -126,7 +126,7 @@ jobs:
           REPOSITORY_NAME: ${{ github.event.repository.name }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          IMAGE_NAME="${INPUT_IMAGE_NAME:-$REPOSITORY_NAME}"
+          IMAGE_NAME=$(echo "${INPUT_IMAGE_NAME:-$REPOSITORY_NAME}" | tr '[:upper:]' '[:lower:]')
           IMAGE_TAG="$RUN_NUMBER"
           IMAGE="$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG"
 
