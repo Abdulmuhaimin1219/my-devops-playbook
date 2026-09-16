@@ -9,7 +9,7 @@ on:
         type: string
 
       image_tag:
-        description: "Immutable application image tag to deploy"
+        description: "Container image tag produced by CI (currently a GitHub Actions run number)"
         required: true
         type: string
 
@@ -44,7 +44,7 @@ on:
         type: string
 
       deployment_name:
-        description: "Kubernetes Deployment name used for rollout verification"
+        description: "Kubernetes Deployment name"
         required: true
         type: string
 
@@ -124,8 +124,27 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Current CI contract: image tags are GitHub Actions run numbers.
           if [[ ! "$IMAGE_TAG" =~ ^[0-9]+$ ]]; then
             echo "ERROR: image_tag must be a numeric GitHub Actions run number."
+            exit 1
+          fi
+
+          if [[ ! "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+            echo "ERROR: Invalid Kubernetes namespace: $NAMESPACE"
+            echo "Namespace must contain only lowercase letters, numbers, and hyphens."
+            exit 1
+          fi
+
+          if [[ ! "$RELEASE_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+            echo "ERROR: Invalid Helm release name: $RELEASE_NAME"
+            echo "Release name must contain only lowercase letters, numbers, and hyphens."
+            exit 1
+          fi
+
+          if [[ ! "$DEPLOYMENT_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+            echo "ERROR: Invalid Kubernetes deployment name: $DEPLOYMENT_NAME"
+            echo "Deployment name must contain only lowercase letters, numbers, and hyphens."
             exit 1
           fi
 
@@ -183,7 +202,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          kubectl get nodes
+          kubectl get nodes \
+            --request-timeout=30s
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
@@ -191,10 +211,21 @@ jobs:
       - name: Helm lint
         env:
           HELM_CHART: ${{ inputs.helm_chart }}
+          VALUES_FILE: ${{ inputs.values_file }}
         run: |
           set -euo pipefail
 
-          helm lint "$HELM_CHART"
+          if [ -n "$VALUES_FILE" ]; then
+            echo "Linting Helm chart with values file: $VALUES_FILE"
+
+            helm lint \
+              "$HELM_CHART" \
+              --values "$VALUES_FILE"
+          else
+            echo "Linting Helm chart with default values."
+
+            helm lint "$HELM_CHART"
+          fi
 
       - name: Deploy with Helm
         env:
@@ -216,7 +247,7 @@ jobs:
             --create-namespace
             --set "image.repository=$IMAGE_REPOSITORY"
             --set "image.tag=$IMAGE_TAG"
-            --wait
+            --atomic
             --timeout 5m
           )
 
@@ -227,9 +258,9 @@ jobs:
           fi
 
           echo "Deploying:"
-          echo "  Release:    $RELEASE_NAME"
-          echo "  Image:      $IMAGE_REPOSITORY:$IMAGE_TAG"
-          echo "  Namespace:  $NAMESPACE"
+          echo "  Release:     $RELEASE_NAME"
+          echo "  Image:       $IMAGE_REPOSITORY:$IMAGE_TAG"
+          echo "  Namespace:   $NAMESPACE"
           echo "  Environment: ${{ inputs.environment }}"
 
           helm upgrade --install \
@@ -237,19 +268,7 @@ jobs:
             "$HELM_CHART" \
             "${HELM_ARGS[@]}"
 
-      - name: Wait for rollout
-        env:
-          NAMESPACE: ${{ inputs.namespace }}
-          DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
-        run: |
-          set -euo pipefail
-
-          kubectl rollout status \
-            "deployment/$DEPLOYMENT_NAME" \
-            --namespace "$NAMESPACE" \
-            --timeout=180s
-
-      - name: Verify deployment
+      - name: Deployment Summary
         env:
           NAMESPACE: ${{ inputs.namespace }}
           RELEASE_NAME: ${{ inputs.release_name }}
@@ -267,4 +286,4 @@ jobs:
           kubectl get service -n "$NAMESPACE"
 
           echo "=== Helm Release ==="
-          helm status "$RELEASE_NAME" -n "$NAMESPACE" 
+          helm status "$RELEASE_NAME" -n "$NAMESPACE"
