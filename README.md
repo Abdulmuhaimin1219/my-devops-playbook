@@ -30,7 +30,7 @@ The workflow currently uses the GitHub Actions `run_number` as the image tag.
 Example:
 
 ```text
-abdulacr.azurecr.io/go-aks-demo:17
+abdul.azurecr.io/go-aks-demo:17
 ```
 
 ### Deploy to AKS
